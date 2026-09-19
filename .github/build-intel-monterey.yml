@@ -1,0 +1,80 @@
+name: Build Unleashed Recompiled - Intel macOS Monterey
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-intel-monterey:
+    name: Intel x86_64 / macOS 12 Monterey
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          brew install cmake ninja ccache
+
+      - name: Confirm Intel runner
+        run: |
+          uname -a
+          uname -m
+          sysctl -n machdep.cpu.brand_string
+          clang --version
+          cmake --version
+
+      - name: Configure for Intel + Monterey
+        run: |
+          cmake --preset macos-release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DVCPKG_TARGET_TRIPLET=x64-osx
+
+      - name: Build
+        run: |
+          cmake --build ./out/build/macos-release \
+            --target UnleashedRecomp \
+            --parallel 3
+
+      - name: Locate app and verify architecture
+        run: |
+          APP="$(find ./out/build/macos-release -name 'UnleashedRecomp.app' -type d | head -n 1)"
+          test -n "$APP"
+          BIN="$APP/Contents/MacOS/UnleashedRecomp"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          file "$BIN"
+          lipo -info "$BIN"
+          vtool -show-build "$BIN" || true
+
+          # Fail if the resulting executable is not x86_64.
+          file "$BIN" | grep -q "x86_64"
+
+      - name: Ad-hoc sign app
+        run: |
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP" || true
+
+      - name: Package
+        run: |
+          mkdir -p package
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP" \
+            package/UnleashedRecomp-Intel-x86_64-macOS12-Monterey.zip
+          shasum -a 256 package/UnleashedRecomp-Intel-x86_64-macOS12-Monterey.zip \
+            > package/SHA256.txt
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnleashedRecomp-Intel-x86_64-macOS12-Monterey
+          path: package/*
+          if-no-files-found: error
+          retention-days: 30
